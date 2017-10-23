@@ -1,9 +1,6 @@
 import enum
-import json
 import logging
 import posixpath
-from pprint import pformat
-from unittest.mock import sentinel
 from typing import (
     Dict,
     Any,
@@ -16,12 +13,15 @@ from typing import (
     NewType,
     TYPE_CHECKING,
     TypeVar,
+    Set,
 )
+from unittest.mock import sentinel
 
+import attr
 import deepdiff
 import stringcase
 
-import attr
+from openapilib.logging_helpers import LazyPretty
 
 if TYPE_CHECKING:
     from unittest.mock import _SentinelObject
@@ -59,39 +59,6 @@ Skippable = Union['T_SKIP', T]
 
 SKIP: 'T_SKIP' = sentinel.OPENAPI_SPEC_SKIP
 REQUIRED = sentinel.OPENAPI_SPEC_REQUIRED
-
-
-class LazyString:
-    NOTHING = object()
-
-    def __init__(self, callback):
-        self.callback = callback
-        self._result = self.NOTHING
-
-    @property
-    def result(self):
-        if self._result is self.NOTHING:
-            self._result = self.callback()
-        return self._result
-
-    def __str__(self):
-        return self.result
-
-
-class LazyPretty(LazyString):
-    def __str__(self):
-        return '\n' + json.dumps(
-            self.result,
-            indent=2
-        )
-
-
-class Pretty:
-    def __init__(self, obj):
-        self.obj = obj
-
-    def __str__(self):
-        return pformat(self.obj)
 
 
 class ParameterLocation(enum.Enum):
@@ -165,7 +132,7 @@ def serialize(
             for k, v in value.items()
         }
 
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, (list, tuple, set)):
         return [serialize(v, ctx=ctx) for v in value]
 
     return value
@@ -193,7 +160,7 @@ def serialize_spec(
     if should_reference and False:
         # Store definition in context, return reference
         import typing
-        spec = typing.cast(Components.T_spec, spec)
+        spec = typing.cast(Components.T_Component, spec)
         _log.debug(
             'trying to reference, ref_name=%r, ctx.components=%r',
             spec.ref_name,
@@ -250,7 +217,7 @@ class Base:
 
     def serialize(
             self,
-            ctx: SerializationContext=None,
+            ctx: SerializationContext,
     ):
         if ctx is None:
             _log.warning(
@@ -319,12 +286,7 @@ class Components(Base):
     """
     https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.0.md#componentsObject
     """
-    T_spec = Union[
-        'Schema',
-        'Response',
-        'Parameter',
-        'RequestBody',
-    ]
+    T_Component = MayBeReferenced
     Registry = Dict[str, Union[T, 'Reference']]
 
     schemas: Registry['Schema'] = attr_dict()
@@ -337,11 +299,11 @@ class Components(Base):
     links: Registry['Link'] = attr_dict()
     callbacks: Registry['Callback'] = attr_dict()
 
-    def registry_for_spec(self, spec: T_spec):
+    def registry_for_spec(self, spec: T_Component):
         return getattr(self, self.component_type_for_spec(spec))
 
     @staticmethod
-    def component_type_for_spec(spec: T_spec):
+    def component_type_for_spec(spec: T_Component):
         base_to_component_type = {
             Schema: 'schemas',
             Response: 'responses',
@@ -357,19 +319,19 @@ class Components(Base):
             f'Unhandled type: {type(spec)}'
         )
 
-    def get_ref_str(self, spec: T_spec) -> str:
+    def get_ref_str(self, spec: T_Component) -> str:
         return posixpath.join(
             '#/components',
             self.component_type_for_spec(spec),
             spec.ref_name
         )
 
-    def get_ref(self, spec: T_spec) -> 'Reference':
+    def get_ref(self, spec: T_Component) -> 'Reference':
         return Reference(
             ref=self.get_ref_str(spec)
         )
 
-    def get_or_create(self, spec: T_spec) -> 'Reference':
+    def get_or_create(self, spec: T_Component) -> 'Reference':
         registry = self.registry_for_spec(spec)
         existing: Optional[Base] = registry.get(spec.ref_name)
         if existing:
@@ -469,7 +431,7 @@ class Operation(Base):
     """
     https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.0.md#operation-object
     """
-    tags: Skippable[List[str]] = attr_skippable()
+    tags: Skippable[Set[str]] = attr_skippable()
     summary: str = attr_skippable()
     description: str = attr_skippable()
 
@@ -478,6 +440,13 @@ class Operation(Base):
     operation_id: str = attr_skippable()
     parameters: List['Parameter'] = attr_skippable()
     request_body: 'RequestBody' = attr_skippable()
+
+    def add_tags(self, *tags):
+        if self.tags is SKIP:
+            self.tags = set()
+
+        self.tags |= set(tags)
+
 
 
 @attr.s(slots=True)
