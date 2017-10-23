@@ -29,6 +29,8 @@ version = read_version()
 
 setup(
     name='openapilib',
+    author='Joar Wandborg',
+    author_email='joar+pypi@wandborg.se',
     url='https://github.com/joar/py-openapilib',
     packages=find_packages(),
     description='OpenAPI 3 object model library',
