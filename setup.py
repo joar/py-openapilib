@@ -29,6 +29,7 @@ version = read_version()
 
 setup(
     name='openapilib',
+    version=read_version(),
     author='Joar Wandborg',
     author_email='joar+pypi@wandborg.se',
     url='https://github.com/joar/py-openapilib',
