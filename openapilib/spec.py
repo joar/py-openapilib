@@ -233,7 +233,7 @@ class Base:
 
 @attr.s(slots=True)
 class MayBeReferenced:
-    ref_name = attr.ib(
+    ref_name: Optional[str] = attr.ib(
         default=None,
         metadata=dict(
             non_spec=True
