@@ -4,7 +4,7 @@ Changelog for openapilib
 0.2.1 (unreleased)
 ------------------
 
-- Nothing changed yet.
+- Packaging improvements
 
 
 0.2.0 (2017-10-23)
