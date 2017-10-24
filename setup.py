@@ -36,5 +36,16 @@ setup(
     packages=find_packages(),
     description='OpenAPI 3 object model library',
     long_description=read_long_description(),
+    keywords='openapi not-swagger',
     install_requires=install_requires,
+    python_requires='>=3.6',  # f-strings
+    license='BSD',
+    classifiers=[
+        'License :: OSI Approved :: BSD License',
+        'Intended Audience :: Developers',
+        'Development Status :: 4 - Beta',
+        'Programming Language :: Python :: 3.6',
+        'Programming Language :: Python :: 3.7',
+    ],
+    zip_safe=False,
 )
