@@ -1,3 +1,88 @@
+"""
+OpenAPI 3 Specification Object Model
+
+:mod:`openapilib.spec` contains classes, each class representing an object in
+the
+`OpenAPI 3 Specification
+<https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.0.md>`_
+
+Raw example:
+
+>>> from openapilib import serialize_spec, spec
+>>> api_spec = spec.OpenAPI(
+...     info=spec.Info(
+...         title='Foo',
+...     ),
+...     paths={
+...         '/': spec.PathItem(
+...             get=spec.Operation(
+...                 responses={
+...                     '200': spec.Response(
+...                         description='Your favourite pet',
+...                         content={
+...                             'application/json': spec.MediaType(
+...                                 schema=spec.Schema(
+...                                     ref_name='Pet',
+...                                     title='Pet',
+...                                     type='object',
+...                                     properties={
+...                                         'name': spec.Schema.from_type(str),
+...                                         'age': spec.Schema.from_type(int),
+...                                     }
+...                                 )
+...                             )
+...                         }
+...                     )
+...                 }
+...             )
+...         )
+...     }
+... )
+>>> import json
+>>> print(json.dumps(serialize_spec(api_spec), indent=2))
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Foo",
+    "version": "0.0.1-dev"
+  },
+  "paths": {
+    "/": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Your favourite pet",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Pet"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Pet": {
+        "title": "Pet",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "age": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      }
+    }
+  }
+}
+"""
 import enum
 import logging
 import posixpath
@@ -10,22 +95,17 @@ from typing import (
     GenericMeta,
     Callable,
     Type,
-    NewType,
-    TYPE_CHECKING,
     TypeVar,
     Set,
 )
 from unittest.mock import sentinel
 
 import attr
-import deepdiff
-import stringcase
 
-from openapilib.logging_helpers import LazyPretty
+from openapilib.base import Base, MayBeReferenced
+from openapilib.sentinel import Sentinel
 
-if TYPE_CHECKING:
-    from unittest.mock import _SentinelObject
-    T_SKIP = NewType('T_SKIP', _SentinelObject)
+builtin_type = type
 
 _log = logging.getLogger(__name__)
 
@@ -45,6 +125,7 @@ T_SchemaFromTyping = GenericMeta
 T_SchemaFrom = Union[
     T_SchemaFromSimple,
     T_SchemaFromTyping,
+    Dict,
     Any  # in case a fallback handler is specified
 ]
 T_SchemaFallbackHandler = Callable[
@@ -55,10 +136,45 @@ T_SchemaFallbackHandler = Callable[
     'Schema'
 ]
 
-Skippable = Union['T_SKIP', T]
+#
+# class DefaultValue(enum.Enum):
+#     #: Used as Object attribute default value to mark an attribute as skippable,
+#     #: while still allowing "None" to be distinct from "unspecified".
+#     #: The end result is that if the user does not specify an attribute value,
+#     #: the property is not included in the output. If the user specifies "None"
+#     #: as the attribute value, it will be included as "null".
+#     SKIP = 'SKIP'
+#
+#     #: Used as Object attribute default value to mark an object as required.
+#     #: When # used together with the :any:`attr_required()` helper, the value
+#     #: "None" for an attribute will be allowed, omitting the property will
+#     #: raise an error.
+#     REQUIRED = 'REQUIRED'
+#
+#     def __repr__(self):
+#         return f'{self.name}'
+#
+#
+# SKIP = DefaultValue.SKIP
+# REQUIRED = DefaultValue.REQUIRED
+#
+# Skippable = Union[DefaultValue, T]
 
-SKIP: 'T_SKIP' = sentinel.OPENAPI_SPEC_SKIP
-REQUIRED = sentinel.OPENAPI_SPEC_REQUIRED
+SKIP = Sentinel('SKIP', """
+Used as Object attribute default value to mark an attribute as skippable,
+while still allowing "None" to be distinct from "unspecified".
+The end result is that if the user does not specify an attribute value,
+the property is not included in the output. If the user specifies "None"
+as the attribute value, it will be included as "null".
+""")
+
+REQUIRED = Sentinel('REQUIRED', """
+Used as Object attribute default value to mark an object as required. When
+used together with the :any:`attr_required()` helper, the value "None" for
+an attribute will be allowed, omitting the property will raise an error.
+""")
+
+Skippable = Union[Sentinel, T]
 
 
 class ParameterLocation(enum.Enum):
@@ -66,16 +182,6 @@ class ParameterLocation(enum.Enum):
     HEADER = 'header'
     PATH = 'path'
     COOKIE = 'cookie'
-
-
-def rename_key(key: str, a: attr.Attribute) -> str:
-    if key.endswith('_'):
-        assert len(key) > 1
-        key = key[:-1]
-
-    #: Name of field according to spec.
-    spec_name = a.metadata.get('spec_name', stringcase.camelcase(key))
-    return spec_name
 
 
 def enum_to_string(member: enum.Enum):
@@ -90,7 +196,8 @@ def attr_skippable(**kwargs) -> Skippable:
 def validate_required(instance, attribute: attr.Attribute, value):
     if value is REQUIRED:
         raise ValueError(
-            f'Missing required value for attribute: {attribute.name}'
+            f'Missing required attribute: {attribute.name} for type '
+            f'{instance.__class__.__name__}.'
         )
 
 
@@ -100,150 +207,8 @@ def attr_required(**kwargs):
     return attr.ib(**kwargs)
 
 
-def attr_dict(**kwargs) -> Dict[KT, VT]:
-    kwargs.setdefault('default', attr.Factory(dict))
-    return attr.ib(**kwargs)
-
-
-@attr.s(slots=True, frozen=True)
-class SerializationContext:
-    disable_referencing: bool = attr.ib(default=False)
-    components: Optional['Components'] = attr.ib(
-        default=attr.Factory(lambda: Components())
-    )
-
-    @classmethod
-    def debug(cls):
-        return SerializationContext(
-            disable_referencing=True
-        )
-
-
-def serialize(
-        value: Union['Base', List, Any],
-        ctx: SerializationContext,
-):
-    if isinstance(value, Base):
-        return serialize_spec(value, ctx=ctx)
-
-    if isinstance(value, dict):
-        return {
-            serialize(k, ctx=ctx): serialize(v, ctx=ctx)
-            for k, v in value.items()
-        }
-
-    if isinstance(value, (list, tuple, set)):
-        return [serialize(v, ctx=ctx) for v in value]
-
-    return value
-
-
-def serialize_spec(
-        spec: 'Base',
-        ctx: SerializationContext,
-):
-    _log.debug(
-        'Serializing %s, ctx.disable_referencing=%r',
-        spec.__class__.__name__,
-        ctx.disable_referencing
-    )
-    may_be_referenced = (
-        isinstance(spec, MayBeReferenced) and
-        spec.ref_name is not None
-    )
-    should_reference = (
-        ctx is not None and
-        not ctx.disable_referencing and
-        may_be_referenced
-    )
-
-    if should_reference and False:
-        # Store definition in context, return reference
-        import typing
-        spec = typing.cast(Components.T_Component, spec)
-        _log.debug(
-            'trying to reference, ref_name=%r, ctx.components=%r',
-            spec.ref_name,
-            ctx.components.serialize(DEBUG_CONTEXT)
-        )
-        return ctx.components.get_or_create(
-            spec,
-        ).serialize(
-            ctx=ctx
-        )
-
-    if may_be_referenced:
-        _log.debug(
-            'not referencing. ref_name=%r, ctx=%r',
-            spec.ref_name,
-            ctx
-        )
-
-    fields = spec.fields_by_name()
-
-    filtered = attr.asdict(
-        spec,
-        filter=filter_attributes,
-        recurse=False,
-    )
-
-    serialized = {
-        rename_key(key, fields[key]): serialize(
-            value,
-            ctx=ctx
-        )
-        for key, value in filtered.items()
-    }
-    return serialized
-
-
-def filter_attributes(attribute: attr.Attribute, value):
-    is_skipped = value is SKIP
-    non_spec = attribute.metadata.get('non_spec')
-
-    return (not is_skipped) and not non_spec
-
-
 # Specification
 # ------------------------------------------------------------------------------
-
-
-class Base:
-    __slots__ = ()
-
-    @classmethod
-    def fields_by_name(cls):
-        return {field.name: field for field in attr.fields(cls)}
-
-    def serialize(
-            self,
-            ctx: SerializationContext,
-    ):
-        if ctx is None:
-            _log.warning(
-                'No SerializationContext provided, creating ad-hoc context.',
-                stack_info=True
-            )
-            ctx = SerializationContext(disable_referencing=True)
-        return serialize_spec(
-            self,
-            ctx=ctx
-        )
-
-
-@attr.s(slots=True)
-class MayBeReferenced:
-    ref_name: Optional[str] = attr.ib(
-        default=None,
-        metadata=dict(
-            non_spec=True
-        )
-    )
-
-
-@attr.s(slots=True)
-class _Described:
-    description: str = attr_skippable()
 
 
 @attr.s(slots=True)
@@ -282,99 +247,6 @@ class License(Base):
 
 
 @attr.s(slots=True)
-class Components(Base):
-    """
-    https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.0.md#componentsObject
-    """
-    T_Component = MayBeReferenced
-    Registry = Dict[str, Union[T, 'Reference']]
-
-    schemas: Registry['Schema'] = attr_dict()
-    responses: Registry['Response'] = attr_dict()
-    parameters: Registry['Parameter'] = attr_dict()
-    examples: Registry['Example'] = attr_dict()
-    request_bodies: Registry['RequestBody'] = attr_dict()
-    headers: Registry['Header'] = attr_dict()
-    security_schemas: Registry['SecuritySchema'] = attr_dict()
-    links: Registry['Link'] = attr_dict()
-    callbacks: Registry['Callback'] = attr_dict()
-
-    def registry_for_spec(self, spec: T_Component):
-        return getattr(self, self.component_type_for_spec(spec))
-
-    @staticmethod
-    def component_type_for_spec(spec: T_Component):
-        base_to_component_type = {
-            Schema: 'schemas',
-            Response: 'responses',
-            Parameter: 'parameters',
-            RequestBody: 'request_bodies',
-        }
-
-        for base, component_type in base_to_component_type.items():
-            if isinstance(spec, base):
-                return component_type
-
-        raise TypeError(
-            f'Unhandled type: {type(spec)}'
-        )
-
-    def get_ref_str(self, spec: T_Component) -> str:
-        return posixpath.join(
-            '#/components',
-            self.component_type_for_spec(spec),
-            spec.ref_name
-        )
-
-    def get_ref(self, spec: T_Component) -> 'Reference':
-        return Reference(
-            ref=self.get_ref_str(spec)
-        )
-
-    def get_or_create(self, spec: T_Component) -> 'Reference':
-        registry = self.registry_for_spec(spec)
-        existing: Optional[Base] = registry.get(spec.ref_name)
-        if existing:
-            _log.debug(
-                'Found existing: %r.',
-                existing.ref_name,
-                extra=dict(
-                    diff=LazyPretty(
-                        lambda: deepdiff.DeepDiff(
-                            existing.serialize(DEBUG_CONTEXT),
-                            spec.serialize(DEBUG_CONTEXT),
-                        )
-                    ),
-                )
-            )
-            return self.get_ref(spec)
-
-        _log.info(
-            'Storing definition %r:%s',
-            spec.ref_name,
-            LazyPretty(lambda: spec.serialize(DEBUG_CONTEXT))
-        )
-
-        registry[spec.ref_name] = spec
-        return self.get_ref(spec)
-
-    def serialize(
-            self,
-            ctx: SerializationContext=None,
-    ):
-        # Prevent components from referencing instead of rendering.
-        _log.debug('Components serialize')
-        if ctx is not None:
-            ctx = attr.evolve(ctx, disable_referencing=True)
-        else:
-            _log.warning('Missing SerializationContext')
-        return super(Components, self).serialize(ctx=ctx)
-
-
-DEBUG_CONTEXT = SerializationContext.debug()
-
-
-@attr.s(slots=True)
 class OpenAPI(Base):
     """
     https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.0.md#openapi-object
@@ -386,23 +258,10 @@ class OpenAPI(Base):
     info: 'Info' = attr_required()
     servers: List['Server'] = attr_skippable()
     paths: Dict[str, 'PathItem'] = attr_required()
-    components: 'Components' = attr.ib(
-        default=attr.Factory(lambda: Components())
-    )
+    components: 'Components' = attr_skippable()
     security: 'SecurityRequirement' = attr_skippable()
     tags: List['Tag'] = attr_skippable()
     external_docs: 'ExternalDocs' = attr_skippable()
-
-    def serialize(
-            self,
-            ctx: SerializationContext=None,
-    ):
-        assert ctx is None
-        ctx = SerializationContext(
-            components=self.components
-        )
-        _log.debug('Using SerializationContext: %r', ctx)
-        return super(OpenAPI, self).serialize(ctx=ctx)
 
 
 @attr.s(slots=True)
@@ -446,7 +305,6 @@ class Operation(Base):
             self.tags = set()
 
         self.tags |= set(tags)
-
 
 
 @attr.s(slots=True)
@@ -493,33 +351,35 @@ class MediaType(Base):
     example: Any = attr_skippable()
 
 
+SCHEMA_SIMPLE_TYPE_ARGS = {
+    str: dict(
+        type='string',
+    ),
+    int: dict(
+        type='integer',
+        format='int64',
+    ),
+    float: dict(
+        type='number',
+        format='double',
+    ),
+    bool: dict(
+        type='boolean',
+    ),
+    list: dict(
+        type='array'
+    ),
+    tuple: dict(
+        type='array'
+    )
+}
+
+
 @attr.s(slots=True)
 class Schema(Base, MayBeReferenced):
     """
     https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.0.md#schema-object
     """
-    SIMPLE_TYPE_ARGS = {
-        str: dict(
-            type='string',
-        ),
-        int: dict(
-            type='integer',
-            format='int64',
-        ),
-        float: dict(
-            type='number',
-            format='double',
-        ),
-        bool: dict(
-            type='boolean',
-        ),
-        list: dict(
-            type='array'
-        ),
-        tuple: dict(
-            type='array'
-        )
-    }
 
     # Metadata keywords
     title: str = attr_skippable()
@@ -532,6 +392,7 @@ class Schema(Base, MayBeReferenced):
     # Validation keywords
     type: str = attr_skippable()
     multiple_of: int = attr_skippable()
+
     maximum: int = attr_skippable()
     exclusive_maximum: int = attr_skippable()
     minimum: int = attr_skippable()
@@ -541,6 +402,7 @@ class Schema(Base, MayBeReferenced):
     pattern: str = attr_skippable()
     items: 'Schema' = attr_skippable()
     additional_items: 'Schema' = attr_skippable()
+    format: str = attr_skippable()
     # (Missing some validation keywords)
 
     all_of: List['Schema'] = attr_skippable()
@@ -580,9 +442,9 @@ class Schema(Base, MayBeReferenced):
     @classmethod
     def from_user_type(
             cls,
-            type_: type,
+            user_type: Type,
             fallback_handler: T_SchemaFallbackHandler=None,
-            **kwargs,
+            **kwargs
     ) -> 'Schema':
         """
         Create a Schema from a user-defined class object.
@@ -593,15 +455,66 @@ class Schema(Base, MayBeReferenced):
         ...     name = str
         ...     pages = int
         >>> Schema.from_user_type(Book)
-        Schema(
-            type='object',
-             properties={
-                'name': Schema(type='string'),
-                'pages': Schema(type='integer', format='int64'),
-            }
-        )
         """
-        pass
+        return cls.from_properties(
+            properties={
+                key: value
+                for key, value in user_type.__dict__.items()
+                if not key.startswith('_')
+            },
+            fallback_handler=fallback_handler,
+            **kwargs,
+        )
+
+    @classmethod
+    def from_properties(
+            cls,
+            properties: Dict[str, T_SchemaFrom],
+            fallback_handler: T_SchemaFallbackHandler=None,
+            **kwargs,
+    ):
+        """
+        Create a ``Schema(type='object')`` from a mapping of
+         ``property_name: property_type``.
+
+        Example:
+
+        >>> from openapilib.serialization import serialize
+        >>> from openapilib.spec import Schema
+        >>> props = {'name': str, 'age': int, 'favourite_numbers': List[int]}
+        >>> schema = Schema.from_properties(props, title='Pet')
+        >>> import json
+        >>> print(json.dumps(serialize(schema), indent=2))
+        {
+          "title": "Pet",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "age": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "favourite_numbers": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int64"
+              }
+            }
+          }
+        }
+
+        """
+        return cls(
+            properties={
+                key: Schema.from_type(
+                    value,
+                    fallback_handler=fallback_handler)
+                for key, value in properties.items()
+            },
+            **kwargs
+        )
 
     @classmethod
     def from_type_hint(
@@ -655,8 +568,12 @@ class Schema(Base, MayBeReferenced):
             type_: T_SchemaFromSimple,
             fallback_handler: T_SchemaFallbackHandler=None,
             **kwargs,
-    ) -> 'Schema':
-        for base, params in cls.SIMPLE_TYPE_ARGS.items():
+    ) -> Optional['Schema']:
+        if not isinstance(type_, type):
+            _log.debug('%r is not a simple type.', type_)
+            return
+
+        for base, params in SCHEMA_SIMPLE_TYPE_ARGS.items():
             if issubclass(type_, base):
                 return cls(
                     **params,
@@ -671,3 +588,98 @@ class Reference(Base):
             spec_name='$ref'
         )
     )
+
+
+COMPONENT_TYPES = {
+    Schema: 'schemas',
+    Response: 'responses',
+    Parameter: 'parameters',
+    RequestBody: 'request_bodies',
+}
+
+T_Component = TypeVar('T_Component', bound=MayBeReferenced)
+T_Registry = Dict[str, Union[T_Component, 'Reference']]
+
+
+def attr_registry(**kwargs):
+    return attr_skippable(**kwargs)
+
+
+@attr.s(slots=True)
+class Components(Base):
+    """
+    https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.0.md#componentsObject
+    """
+
+    schemas: T_Registry['Schema'] = attr_registry()
+    responses: T_Registry['Response'] = attr_registry()
+    parameters: T_Registry['Parameter'] = attr_registry()
+    examples: T_Registry['Example'] = attr_registry()
+    request_bodies: T_Registry['RequestBody'] = attr_registry()
+    headers: T_Registry['Header'] = attr_registry()
+    security_schemas: T_Registry['SecuritySchema'] = attr_registry()
+    links: T_Registry['Link'] = attr_registry()
+    callbacks: T_Registry['Callback'] = attr_registry()
+
+    def get_registry_for_spec(
+            self,
+            spec: T_Component
+    ) -> Optional[T_Registry[T_Component]]:
+        registry: Skippable[T_Registry[T_Component]] = getattr(
+            self,
+            self.component_type_for_spec(spec)
+        )
+        if registry is not SKIP:
+            return registry
+
+        _log.debug('Registry for type %s does not exist', type(spec))
+        return None
+
+    def create_registry_for_spec(
+            self,
+            spec: T_Component
+    ) -> T_Registry[T_Component]:
+        registry = self.get_registry_for_spec(spec)
+        if registry is not None:
+            return registry
+
+        registry: T_Registry[T_Component] = {}
+        setattr(self, self.component_type_for_spec(spec), registry)
+        return registry
+
+    @staticmethod
+    def component_type_for_spec(spec: T_Component):
+        for base, component_type in COMPONENT_TYPES.items():
+            if isinstance(spec, base):
+                return component_type
+
+        raise TypeError(
+            f'Unhandled type: {type(spec)}'
+        )
+
+    def get_ref_str(self, spec: T_Component) -> str:
+        return posixpath.join(
+            '#/components',
+            self.component_type_for_spec(spec),
+            spec.ref_name
+        )
+
+    def get_ref(self, spec: T_Component) -> 'Reference':
+        return Reference(
+            ref=self.get_ref_str(spec)
+        )
+
+    def get_stored(self, spec: T_Component) -> Optional[T_Component]:
+        registry = self.get_registry_for_spec(spec)
+        if registry is None:
+            return
+        return registry.get(spec.ref_name)
+
+    def exists(self, spec: T_Component) -> bool:
+        return self.get_stored(spec) is not None
+
+    def store(self, spec: T_Component) -> 'Reference':
+        registry = self.create_registry_for_spec(spec)
+        registry[spec.ref_name] = spec
+        return self.get_ref(spec)
+
