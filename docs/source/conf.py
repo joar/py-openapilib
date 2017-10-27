@@ -21,6 +21,10 @@
 # import sys
 # sys.path.insert(0, os.path.abspath('.'))
 
+import os
+print('CWD: ' + os.getcwd())
+os.system('ls -la')
+
 
 # -- General configuration ------------------------------------------------
 
