@@ -1,7 +1,8 @@
+# Used by readthedocs, required to use python 3.6 on readthedocs
 name: openapilib
 channels:
 - defaults
 dependencies:
 - python=3.6
 - pip:
-  - .[docs]
+  - -e ./builds/openapilib/checkouts/[docs]

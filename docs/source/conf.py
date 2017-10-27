@@ -39,7 +39,8 @@ extensions = [
     'sphinx.ext.coverage',
     'sphinx.ext.viewcode',
     'sphinx.ext.napoleon',
-    'sphinx_autodoc_typehints',  # XXX: Must be loaded *after* napoleon
+    'sphinx_autodoc_annotation',  # XXX: Must be loaded *after* napoleon
+    'sphinx_autodoc_typehints',
     # 'sphinx.ext.doctest',
 ]
 
@@ -179,9 +180,14 @@ texinfo_documents = [
 ]
 
 
-
-
 # Example configuration for intersphinx: refer to the Python standard library.
 intersphinx_mapping = {'https://docs.python.org/3': None}
 
+
+# -- Options for autosummary ----------------------------------------------
+
 autosummary_generate = True
+
+# -- Options for autodoc --------------------------------------------------
+
+autodoc_member_order = 'bysource'

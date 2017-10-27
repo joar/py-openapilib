@@ -17,9 +17,16 @@ from openapilib.base import Base, MayBeReferenced
 _log = logging.getLogger(__name__)
 
 
-def serialize_spec(spec: OpenAPI, disable_referencing=False) -> Dict:
+def serialize_spec(spec: OpenAPI, disable_referencing=False) -> Dict[str, Any]:
     """
     Serialize an OpenAPI spec.
+
+    Parameters
+    ----------
+    spec
+        Spec to be serialized
+    disable_referencing
+        Disable automatic referencing with ``$ref``.
     """
     if spec.components is not None and spec.components is not SKIP:
         components = spec.components
@@ -41,7 +48,7 @@ def serialize_spec(spec: OpenAPI, disable_referencing=False) -> Dict:
     return serialized
 
 
-def serialize(spec: Base) -> Dict:
+def serialize(spec: Base) -> Dict[str, Any]:
     """
     Recursively convert a spec to a dictionary.
 

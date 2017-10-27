@@ -14,6 +14,7 @@ extras_require = {
     'docs': [
         'Sphinx >=1.6.5',
         'sphinx-autodoc-typehints >=1.2.3',
+        'sphinx-autodoc-annotation >=1.0-1',
     ]
 }
 
