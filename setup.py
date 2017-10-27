@@ -6,8 +6,16 @@ install_requires = [
     'stringcase >=1.2.0',
     'deepdiff >=3.3.0',
     'attrs >=17.2.0',
-    'sphinx-autodoc-typehints >=1.2.3'
 ]
+extras_require = {
+    'tests': [
+        'pytest >=3.2.3'
+    ],
+    'docs': [
+        'Sphinx >=1.6.5'
+        'sphinx-autodoc-typehints >=1.2.3'
+    ]
+}
 
 
 def read_version(version_module_file='openapilib/version.py'):
@@ -43,6 +51,7 @@ setup(
     long_description=read_long_description(),
     keywords='openapi not-swagger',
     install_requires=install_requires,
+    extras_require=extras_require,
     python_requires='>=3.6',  # f-strings
     license='BSD',
     classifiers=[
