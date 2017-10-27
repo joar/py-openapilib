@@ -9,11 +9,11 @@ install_requires = [
 ]
 extras_require = {
     'tests': [
-        'pytest >=3.2.3'
+        'pytest >=3.2.3',
     ],
     'docs': [
-        'Sphinx >=1.6.5'
-        'sphinx-autodoc-typehints >=1.2.3'
+        'Sphinx >=1.6.5',
+        'sphinx-autodoc-typehints >=1.2.3',
     ]
 }
 

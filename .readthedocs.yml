@@ -1,4 +1,6 @@
-python:
-  version: 3.6
-  extra_requirements:
-    - docs
+conda:
+  file: environment.yml
+# python:
+#   version: 3.6
+#   extra_requirements:
+#     - docs
