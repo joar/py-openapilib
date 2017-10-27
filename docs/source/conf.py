@@ -23,8 +23,14 @@
 
 import os
 print('CWD: ' + os.getcwd())
-os.system('ls -la')
-
+if os.getcwd().startswith('/home/docs/checkouts/readthedocs.org/user_builds/'):
+    # Workaround until i figure out how to install 'self' with 'extras_require'
+    # using conda, or until readthedocs support python 3.6.
+    print(
+        '\x1b[33mYou seem to be running this on readthedocs, '
+        'installing the docs requirements for you.\x1b0m'
+    )
+    os.system("bash -c 'cd ../../ && ls -la && pip install -e .[docs]'")
 
 # -- General configuration ------------------------------------------------
 
