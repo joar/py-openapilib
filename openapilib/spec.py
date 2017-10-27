@@ -1,91 +1,7 @@
-"""
-OpenAPI 3 Specification Object Model
-
-:mod:`openapilib.spec` contains classes, each class representing an object in
-the
-`OpenAPI 3 Specification
-<https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.0.md>`_
-
-Raw example:
-
->>> from openapilib import serialize_spec, spec
->>> api_spec = spec.OpenAPI(
-...     info=spec.Info(
-...         title='Foo',
-...     ),
-...     paths={
-...         '/': spec.PathItem(
-...             get=spec.Operation(
-...                 responses={
-...                     '200': spec.Response(
-...                         description='Your favourite pet',
-...                         content={
-...                             'application/json': spec.MediaType(
-...                                 schema=spec.Schema(
-...                                     ref_name='Pet',
-...                                     title='Pet',
-...                                     type='object',
-...                                     properties={
-...                                         'name': spec.Schema.from_type(str),
-...                                         'age': spec.Schema.from_type(int),
-...                                     }
-...                                 )
-...                             )
-...                         }
-...                     )
-...                 }
-...             )
-...         )
-...     }
-... )
->>> import json
->>> print(json.dumps(serialize_spec(api_spec), indent=2))
-{
-  "openapi": "3.0.0",
-  "info": {
-    "title": "Foo",
-    "version": "0.0.1-dev"
-  },
-  "paths": {
-    "/": {
-      "get": {
-        "responses": {
-          "200": {
-            "description": "Your favourite pet",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Pet"
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  },
-  "components": {
-    "schemas": {
-      "Pet": {
-        "title": "Pet",
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "age": {
-            "type": "integer",
-            "format": "int64"
-          }
-        }
-      }
-    }
-  }
-}
-"""
 import enum
 import logging
 import posixpath
+from functools import partial
 from typing import (
     Dict,
     Any,
@@ -97,23 +13,29 @@ from typing import (
     Type,
     TypeVar,
     Set,
+    cast,
+    Iterable,
+    Generic,
+    ClassVar,
+    Tuple,
 )
-from unittest.mock import sentinel
 
 import attr
 
 from openapilib.base import Base, MayBeReferenced
+from openapilib.helpers import convert_skippable
 from openapilib.sentinel import Sentinel
 
 builtin_type = type
 
 _log = logging.getLogger(__name__)
 
+T_co = TypeVar('T_co', covariant=True)
 T = TypeVar('T')
 KT = TypeVar('KT')
 VT = TypeVar('VT')
 
-T_SchemaFromSimple = Union[
+SchemaSimpleSourceType = Union[
     Type[str],
     Type[int],
     Type[float],
@@ -121,44 +43,27 @@ T_SchemaFromSimple = Union[
     Type[list],
     Type[dict],
 ]
-T_SchemaFromTyping = GenericMeta
-T_SchemaFrom = Union[
-    T_SchemaFromSimple,
-    T_SchemaFromTyping,
-    Dict,
-    Any  # in case a fallback handler is specified
+
+SchemaTypingSourceType = Union[
+    GenericMeta
+    # Type[List],
+    # Type[type(ClassVar)],
+    # Type[Dict],
+    # Type[Union]
 ]
-T_SchemaFallbackHandler = Callable[
+SchemaSourceType = Union[
+    SchemaTypingSourceType,
+    SchemaSimpleSourceType,
+    Dict[str, 'SchemaSourceType'],
+    Any
+]
+SchemaFallbackHandlerType = Callable[
     [
-        T_SchemaFrom,
+        SchemaSourceType,
         Dict[str, Any],  # additional kwargs passed to Schema.from_type
     ],
-    'Schema'
+    Optional['Schema']
 ]
-
-#
-# class DefaultValue(enum.Enum):
-#     #: Used as Object attribute default value to mark an attribute as skippable,
-#     #: while still allowing "None" to be distinct from "unspecified".
-#     #: The end result is that if the user does not specify an attribute value,
-#     #: the property is not included in the output. If the user specifies "None"
-#     #: as the attribute value, it will be included as "null".
-#     SKIP = 'SKIP'
-#
-#     #: Used as Object attribute default value to mark an object as required.
-#     #: When # used together with the :any:`attr_required()` helper, the value
-#     #: "None" for an attribute will be allowed, omitting the property will
-#     #: raise an error.
-#     REQUIRED = 'REQUIRED'
-#
-#     def __repr__(self):
-#         return f'{self.name}'
-#
-#
-# SKIP = DefaultValue.SKIP
-# REQUIRED = DefaultValue.REQUIRED
-#
-# Skippable = Union[DefaultValue, T]
 
 SKIP = Sentinel('SKIP', """
 Used as Object attribute default value to mark an attribute as skippable,
@@ -178,10 +83,28 @@ Skippable = Union[Sentinel, T]
 
 
 class ParameterLocation(enum.Enum):
+    """
+    https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.0.md#parameter-locations
+    """
     QUERY = 'query'
     HEADER = 'header'
     PATH = 'path'
     COOKIE = 'cookie'
+
+
+class StringFormat(enum.Enum):
+    """
+    http://json-schema.org/latest/json-schema-validation.html#rfc.section.8.3
+    """
+    EMAIL = 'email'
+    IPV4 = 'ipv4'
+    IPV6 = 'ipv6'
+    DATETIME = 'date-time'
+    HOSTNAME = 'hostname'
+    URI = 'uri'
+    URI_REFERENCE = 'uri-reference'
+    URI_TEMPLATE = 'uri-template'
+    JSON_POINTER = 'json-pointer'
 
 
 def enum_to_string(member: enum.Enum):
@@ -193,17 +116,46 @@ def attr_skippable(**kwargs) -> Skippable:
     return attr.ib(**kwargs)
 
 
-def validate_required(instance, attribute: attr.Attribute, value):
+def validate_required(
+        instance,
+        attribute: attr.Attribute,
+        value,
+):
     if value is REQUIRED:
         raise ValueError(
-            f'Missing required attribute: {attribute.name} for type '
-            f'{instance.__class__.__name__}.'
+            'Missing required attribute: {attribute_name} for type '
+            '{type}.'.format(
+                attribute_name=attribute.name,
+                type=type(instance)
+            )
         )
+
+
+ValidatorType = Callable[[Base, attr.Attribute, Any], None]
 
 
 def attr_required(**kwargs):
     kwargs.setdefault('default', REQUIRED)
-    kwargs.setdefault('validator', []).append(validate_required)
+    validator: Union[
+        ValidatorType,
+        List[ValidatorType]
+    ] = kwargs.get('validator', [])
+    if not isinstance(validator, list):
+        if not callable(validator):
+            raise TypeError(
+                'validator is not callable: {validator!r}'.format(
+                    validator=validator
+                )
+            )
+
+        validator = [validator]
+
+    validator = [validate_required] + validator
+
+    kwargs['validator'] = validator
+
+
+    kwargs.setdefault('validator', [])
     return attr.ib(**kwargs)
 
 
@@ -306,6 +258,12 @@ class Operation(Base):
 
         self.tags |= set(tags)
 
+    def _validate_responses(self, attribute, value):
+        assert isinstance(value, dict)
+        for k, v in value.items():
+            assert isinstance(k, str)
+            assert isinstance(v, Response)
+
 
 @attr.s(slots=True)
 class Parameter(Base, MayBeReferenced):
@@ -375,12 +333,23 @@ SCHEMA_SIMPLE_TYPE_ARGS = {
 }
 
 
+class SchemaHelperError(Exception):
+    pass
+
+
+class SchemaHelperUnhandled(Exception):
+    """
+    Raised by Schema.from_type methods if they do not handle the provided
+    source.
+    """
+    pass
+
+
 @attr.s(slots=True)
 class Schema(Base, MayBeReferenced):
     """
     https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.0.md#schema-object
     """
-
     # Metadata keywords
     title: str = attr_skippable()
     description: str = attr_skippable()
@@ -390,7 +359,7 @@ class Schema(Base, MayBeReferenced):
     definitions: Dict[str, 'Schema'] = attr_skippable()
 
     # Validation keywords
-    type: str = attr_skippable()
+    _type: str = attr_skippable()
     multiple_of: int = attr_skippable()
 
     maximum: int = attr_skippable()
@@ -410,40 +379,89 @@ class Schema(Base, MayBeReferenced):
     not_: 'Schema' = attr_skippable()
     any_of: List['Schema'] = attr_skippable()
     properties: Dict[str, 'Schema'] = attr_skippable()
+    additional_properties: Dict[str, 'Schema'] = attr_skippable()
+    required: Skippable[Iterable[str]] = attr_skippable(
+        convert=convert_skippable(set)
+    )
+    read_only: Skippable[bool] = attr_skippable()
+    write_only: Skippable[bool] = attr_skippable()
+    example: Skippable[Any] = attr_skippable()
 
     @classmethod
     def from_type(
             cls,
-            type_: T_SchemaFrom,
-            fallback_handler: T_SchemaFallbackHandler=None,
-            **kwargs,
-    ):
-        from_hint = cls.from_type_hint(
-            type_,
-            fallback_handler=fallback_handler,
+            source: SchemaSourceType,
+            fallback_handler: SchemaFallbackHandlerType=None,
             **kwargs
-        )
-        if from_hint is not None:
-            return from_hint
+    ) -> 'Schema':
+        if isinstance(source, (Schema, Reference)):
+            # Allow a pre-made Schema/Reference to be passed in directly
+            return source
 
-        simple = cls.from_builtin_simple_type(type_, **kwargs)
-        if simple is not None:
-            return simple
+        HandlerType = Callable[[SchemaSourceType], Schema]
+
+        handlers: List[
+            Union[
+                HandlerType,
+                Tuple[HandlerType, bool]
+            ]
+        ] = [
+            cls.from_type_hint,
+            cls.from_builtin_simple_type,
+            (
+                cls.from_properties,
+                isinstance(source, dict),
+            ),
+            (
+                cls.from_user_type,
+                # Restrict the set of matched classes by only handling classes
+                # without base classes as "user type" classes
+                isinstance(source, type) and not source.__bases__,
+            ),
+        ]
+
+        for handler in handlers:
+            if isinstance(handler, tuple):
+                handler, is_enabled = handler
+                if not is_enabled:
+                    continue
+
+            try:
+                return handler(
+                    source,
+                    fallback_handler=fallback_handler,
+                    **kwargs
+                )
+            except SchemaHelperUnhandled as exc:
+                _log.debug('%s raised %r', handler, exc)
+            except SchemaHelperError as exc:
+                raise exc
+            except Exception as exc:
+                raise SchemaHelperError(
+                    'Could not create schema from {source!r}'.format(
+                        source=source
+                    )
+                ) from exc
 
         if fallback_handler is not None:
-            fallback = fallback_handler(type_, kwargs)
-            if fallback is not None:
-                return fallback
+            schema = fallback_handler(
+                source,
+                kwargs
+            )
+            if schema is not None:
+                return schema
 
-        raise TypeError(
-            f'Can not create schema from type: {type_!r}'
+        raise SchemaHelperError(
+            'Can not create schema from type: {source!r}'.format(
+                source=source
+            )
         )
 
     @classmethod
     def from_user_type(
             cls,
-            user_type: Type,
-            fallback_handler: T_SchemaFallbackHandler=None,
+            user_type: type,
+            fallback_handler: SchemaFallbackHandlerType=None,
             **kwargs
     ) -> 'Schema':
         """
@@ -452,9 +470,21 @@ class Schema(Base, MayBeReferenced):
         Example:
 
         >>> class Book:
-        ...     name = str
-        ...     pages = int
-        >>> Schema.from_user_type(Book)
+        >>>     name = str
+        >>>     pages = int
+        >>> print(Schema.from_user_type(Book))
+        {
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "pages": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        }
+
         """
         return cls.from_properties(
             properties={
@@ -469,22 +499,19 @@ class Schema(Base, MayBeReferenced):
     @classmethod
     def from_properties(
             cls,
-            properties: Dict[str, T_SchemaFrom],
-            fallback_handler: T_SchemaFallbackHandler=None,
-            **kwargs,
+            properties: Dict,
+            fallback_handler: SchemaFallbackHandlerType=None,
+            **kwargs
     ):
         """
         Create a ``Schema(type='object')`` from a mapping of
-         ``property_name: property_type``.
+        ``property_name: property_type``.
 
         Example:
 
-        >>> from openapilib.serialization import serialize
-        >>> from openapilib.spec import Schema
         >>> props = {'name': str, 'age': int, 'favourite_numbers': List[int]}
         >>> schema = Schema.from_properties(props, title='Pet')
-        >>> import json
-        >>> print(json.dumps(serialize(schema), indent=2))
+        >>> print(schema)
         {
           "title": "Pet",
           "properties": {
@@ -506,79 +533,180 @@ class Schema(Base, MayBeReferenced):
         }
 
         """
-        return cls(
-            properties={
-                key: Schema.from_type(
-                    value,
-                    fallback_handler=fallback_handler)
-                for key, value in properties.items()
-            },
-            **kwargs
-        )
+        try:
+            return cls(
+                type='object',
+                properties={
+                    key: Schema.from_type(
+                        value,
+                        fallback_handler=fallback_handler)
+                    for key, value in properties.items()
+                },
+                **kwargs
+            )
+        except SchemaHelperError as exc:
+            raise SchemaHelperError(
+                'Exception when creating schema from: {properties}'.format(
+                    properties=properties
+                )
+            ) from exc
 
     @classmethod
     def from_type_hint(
             cls,
-            type_: T_SchemaFromTyping,
-            fallback_handler: T_SchemaFallbackHandler=None,
+            hint: SchemaTypingSourceType,
+            fallback_handler: SchemaFallbackHandlerType=None,
             **kwargs,
-    ) -> 'Schema':
-        # import locally, since we're using
-        # "from typing import .."
-        # outside this scope, and my editor get confused when trying to help
-        # me import.
-        import typing
+    ) -> Skippable['Schema']:
+        """
+        Create a Schema from a :mod:`typing` type hint.
 
-        t = type_  # convenient
+        >>> # from typing import List
+        >>> schema = Schema.from_type_hint(List[int])
+        >>> print(schema)
+        {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
 
-        if isinstance(t, GenericMeta):
-            # We're dealing with a typing.* object
-            if t.__origin__ is typing.List:
-                items = SKIP
-                if t.__args__:
-                    items = cls.from_type(
-                        t.__args__[0],
-                        fallback_handler=fallback_handler,
+        """
+        if isinstance(hint, type(ClassVar)):
+            return cls.from_type(
+                hint.__type__,
+                fallback_handler=fallback_handler,
+                **kwargs
+            )
+
+        if isinstance(hint, type(Any)):
+            return cls()
+
+        generic_types = (
+            type(List),
+            type(Dict),
+            type(Union),
+        )
+
+        if not isinstance(hint, generic_types):
+            raise SchemaHelperUnhandled(
+                '{hint} is not a type hint.'.format(hint=hint)
+            )
+
+        origin = getattr(hint, '__origin__', hint)
+
+        hint_arg_types: List[Schema] = []
+
+        if hasattr(hint, '__args__'):
+            try:
+                hint_arg_types = [
+                    Schema.from_type(
+                        arg,
+                        fallback_handler=fallback_handler
                     )
+                    for arg in hint.__args__
+                ]
+            except SchemaHelperError as exc:
+                raise SchemaHelperError(
+                    'Could not create schemas for type '
+                    'hint\'s argument types. Hint: {hint}'.format(
+                        hint=hint
+                    )
+                ) from exc
 
+        # We're dealing with a typing.* object
+        if origin is List:
+            items = SKIP
+            if hint_arg_types:
+                items = hint_arg_types[0]
+
+            return cls(
+                type='array',
+                items=items,
+                **kwargs,
+            )
+
+        if origin is Union:
+            if hint_arg_types:
                 return cls(
-                    type='array',
-                    items=items,
-                    **kwargs,
+                    any_of=hint_arg_types,
+                    fallback_handler=fallback_handler,
+                    **kwargs
+                )
+            else:
+                return cls()
+
+        if origin is Dict:
+            value_schema = SKIP
+
+            if len(hint_arg_types) >= 2:
+                value_schema = hint_arg_types[1]
+
+            return cls(
+                type='object',
+                additional_properties=value_schema,
+                **kwargs,
+            )
+
+        if origin is ClassVar:
+            if hint_arg_types:
+                return cls.from_type(
+                    hint_arg_types[0],
+                    fallback_handler=fallback_handler,
+                    **kwargs
                 )
 
-            if t.__origin__ is typing.Dict:
-                value_schema = SKIP
-                if t.__args__:
-                    value_schema = cls.from_type(
-                        t.__args__[1],
-                        fallback_handler=fallback_handler,
-                    )
-
-                return cls(
-                    type='object',
-                    properties={},
-                    additional_properties=value_schema,
-                    **kwargs,
-                )
+        raise SchemaHelperError(
+            'Unsupported type hint: {hint}'.format(hint=hint)
+        )
 
     @classmethod
     def from_builtin_simple_type(
             cls,
-            type_: T_SchemaFromSimple,
-            fallback_handler: T_SchemaFallbackHandler=None,
+            source: SchemaSimpleSourceType,
+            fallback_handler: SchemaFallbackHandlerType=None,
             **kwargs,
-    ) -> Optional['Schema']:
-        if not isinstance(type_, type):
-            _log.debug('%r is not a simple type.', type_)
-            return
+    ) -> Skippable['Schema']:
+        """
+        Create a Schema from a builtin type, such as:
+
+        -   :class:`int`
+        -   :class:`str`
+        -   :class:`list`
+        -   :class:`tuple`
+        -   :class:`dict`
+        -   :class:`float`
+        -   :class:`bool`
+
+        Examples
+        --------
+
+        >>> print(Schema.from_builtin_simple_type(int))
+        {
+          "type": "integer",
+          "format": "int64"
+        }
+        """
+        if not isinstance(source, type):
+            _log.debug('%r is not a simple type.', source)
+            raise SchemaHelperUnhandled(
+                '{source!r} is not a type'.format(source=source)
+            )
 
         for base, params in SCHEMA_SIMPLE_TYPE_ARGS.items():
-            if issubclass(type_, base):
+            if issubclass(source, base):
                 return cls(
                     **params,
                     **kwargs,
                 )
+
+        raise SchemaHelperUnhandled(
+            '{type} is not a subclass of any of {simple_types}'.format(
+                type=type(source),
+                simple_types=SCHEMA_SIMPLE_TYPE_ARGS.keys()
+            )
+        )
 
 
 @attr.s(slots=True)
@@ -597,7 +725,12 @@ COMPONENT_TYPES = {
     RequestBody: 'request_bodies',
 }
 
-T_Component = TypeVar('T_Component', bound=MayBeReferenced)
+
+class ComponentType(Generic[T_co], extra=MayBeReferenced):
+    __slots__ = ()
+
+
+T_Component = ComponentType[T_co]
 T_Registry = Dict[str, Union[T_Component, 'Reference']]
 
 
@@ -654,7 +787,7 @@ class Components(Base):
                 return component_type
 
         raise TypeError(
-            f'Unhandled type: {type(spec)}'
+            'Unhandled type: {spec}'.format(type=type(spec))
         )
 
     def get_ref_str(self, spec: T_Component) -> str:
@@ -682,4 +815,3 @@ class Components(Base):
         registry = self.create_registry_for_spec(spec)
         registry[spec.ref_name] = spec
         return self.get_ref(spec)
-

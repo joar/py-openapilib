@@ -13,8 +13,8 @@ def api_route(
         # defaults
         summary_: spec.Skippable[str] = spec.SKIP
         description_: spec.Skippable[str] = spec.SKIP
-        response_type_: spec.T_SchemaFrom = None
-        request_body_type_: spec.T_SchemaFrom = None
+        response_type_: spec.SchemaSourceType = None
+        request_body_type_: spec.SchemaSourceType = None
         tags_: Set[str] = []
         # ...
 
@@ -94,7 +94,7 @@ def api_route(
 def example_handler(request) -> int:
     pass
 
-from openapilib.logging_helpers import LazyPretty
+from openapilib.helpers import LazyPretty
 
 print(
     json.dumps(serialize_spec(example_handler.operation_spec))

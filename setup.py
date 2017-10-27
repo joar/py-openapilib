@@ -22,7 +22,11 @@ def read_long_description(rst_file='README.rst'):
         with open(rst_file) as fd:
             return fd.read()
     except IOError:
-        warnings.warn(f'Could not read long description from {rst_file}')
+        warnings.warn(
+            'Could not read long description from {rst_file}'.format(
+                rst_file=rst_file
+            )
+        )
 
 
 version = read_version()

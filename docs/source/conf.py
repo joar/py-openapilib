@@ -38,8 +38,8 @@ extensions = [
     'sphinx.ext.todo',
     'sphinx.ext.coverage',
     'sphinx.ext.viewcode',
-    # 'sphinx.ext.napoleon',
-    # 'sphinx_autodoc_typehints',  # XXX: Must be loaded *after* napoleon
+    'sphinx.ext.napoleon',
+    'sphinx_autodoc_typehints',  # XXX: Must be loaded *after* napoleon
     # 'sphinx.ext.doctest',
 ]
 

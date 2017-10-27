@@ -20,6 +20,14 @@ class Base:
         from .serialization import spec_to_dict
         return spec_to_dict(self)
 
+    def __str__(self):
+        from .serialization import serialize
+        import json
+        return json.dumps(
+            serialize(self),
+            indent=2
+        )
+
 
 @attr.s(slots=True)
 class MayBeReferenced:

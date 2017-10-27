@@ -5,7 +5,7 @@ import attr
 import deepdiff
 import stringcase
 
-from openapilib.logging_helpers import LazyPretty
+from openapilib.helpers import LazyPretty
 from openapilib.spec import (
     Components,
     SKIP,
@@ -174,6 +174,10 @@ def spec_to_dict(spec: 'Base'):
 
 
 def rename_key(key: str, a: attr.Attribute) -> str:
+    if key.startswith('_'):
+        assert len(key) > 1
+        key = key[1:]
+
     if key.endswith('_'):
         assert len(key) > 1
         key = key[:-1]
