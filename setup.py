@@ -6,6 +6,7 @@ install_requires = [
     'stringcase >=1.2.0',
     'deepdiff >=3.3.0',
     'attrs >=17.2.0',
+    'sphinx-autodoc-typehints >=1.2.3'
 ]
 
 
