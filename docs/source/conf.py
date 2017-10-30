@@ -36,7 +36,17 @@ if os.getcwd().startswith('/home/docs/checkouts/readthedocs.org/user_builds/'):
         'installing the docs requirements for you.\x1b0m'
     )
     sys.stderr.flush()
-    os.system("bash -c 'cd ../../ && ls -la && pip install -e .[docs]'")
+    pip_path = os.path.join(
+        os.environ['CONDA_ENVS_PATH'],
+        os.environ['CONDA_DEFAULT_ENV'],
+        'bin',
+        'pip'
+    )
+    os.system(
+        "bash -c 'cd ../../ && ls -la && {pip_path} install -e .[docs]'".format(
+            pip_path=pip_path
+        )
+    )
 
 # -- General configuration ------------------------------------------------
 
