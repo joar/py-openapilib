@@ -23,10 +23,12 @@
 
 import os
 import sys
+from pprint import pprint
 
 print('CWD: ' + os.getcwd())
 
 if os.getcwd().startswith('/home/docs/checkouts/readthedocs.org/user_builds/'):
+    pprint(dict(os.environ))
     # Workaround until i figure out how to install 'self' with 'extras_require'
     # using conda, or until readthedocs support python 3.6.
     sys.stderr.write(
