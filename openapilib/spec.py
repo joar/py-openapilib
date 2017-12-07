@@ -1,3 +1,4 @@
+import datetime
 import enum
 import logging
 import posixpath
@@ -329,6 +330,10 @@ SCHEMA_SIMPLE_TYPE_ARGS = {
     ),
     tuple: dict(
         type='array'
+    ),
+    datetime.datetime: dict(
+        type='string',
+        format='date-time',
     )
 }
 
