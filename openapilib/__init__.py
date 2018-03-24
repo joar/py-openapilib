@@ -39,7 +39,7 @@ Raw example:
 ...         )
 ...     }
 ... )
->>> pretty_json(serialize_spec(api_spec))
+>>> print(pretty_json(serialize_spec(api_spec)))
 {
   "openapi": "3.0.0",
   "info": {

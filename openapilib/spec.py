@@ -474,11 +474,13 @@ class Schema(Base, MayBeReferenced):
 
         Example:
 
-        >>> class Book:
-        >>>     name = str
-        >>>     pages = int
+        >>> class Book(object):
+        ...     name = str
+        ...     pages = int
+        ...
         >>> print(Schema.from_user_type(Book))
         {
+          "type": "object",
           "properties": {
             "name": {
               "type": "string"
@@ -489,7 +491,6 @@ class Schema(Base, MayBeReferenced):
             }
           }
         }
-
         """
         return cls.from_properties(
             properties={
@@ -519,6 +520,7 @@ class Schema(Base, MayBeReferenced):
         >>> print(schema)
         {
           "title": "Pet",
+          "type": "object",
           "properties": {
             "name": {
               "type": "string"
